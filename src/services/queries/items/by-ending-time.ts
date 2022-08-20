@@ -20,6 +20,13 @@ export const itemsByEndingTime = async (
 			}
 		}
 	);
-	console.log(ids)
+	const results = await Promise.all(ids.map(id=>{
+		return client.hGetAll(itemsKey(id))
+	}))
+	
+	return results.map( (item,i)=>
+	{
+		return deserialize(ids[i], item)
+	})
 };
 
