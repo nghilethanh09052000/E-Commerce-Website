@@ -1,19 +1,26 @@
 import type { CreateBidAttrs } from '$services/types';
 import { bidHistoryKey, itemsKey,itemsByPriceKey } from '$services/keys';
-import { client } from '$services/redis';
+import { client, withLock } from '$services/redis';
 import { DateTime } from 'luxon';
 import { getItem } from './items';
 
 
+const pause = (duration: number) => {
+	return new Promise((resolve) => {
+		setTimeout(resolve, duration);
+	});
+};
 
 export const createBid = async (
 	attrs: CreateBidAttrs) => 
 	{
-		return client.executeIsolated(async (isolatedClient) =>
+		return withLock(attrs.itemId, async (lockedClient:typeof client,signal:any) =>
 		{
-			await isolatedClient.watch(itemsKey(attrs.itemId));
+			// 1) Fetching the item
+			// 2) Doing validation
+			// 3) Writing some data
 			const item = await getItem(attrs.itemId);
-
+			await pause(5000);
 			if(!item)
 			{
 				throw new Error('Item does not exist');
@@ -32,22 +39,31 @@ export const createBid = async (
 			const serialized = serializeHistory(
 				attrs.amount,
 				attrs.createdAt.toMillis()
-				)
+			)
 
-			return isolatedClient
-					.multi()
-					.rPush(bidHistoryKey(attrs.itemId),serialized)
-					.hSet(itemsKey(item.id),{
-							bids:item.bids+1,
-							price:attrs.amount,
-							highestBidUserId:attrs.userId
-						})
-					.zAdd(itemsByPriceKey(),{
-							value:item.id,
-							score:attrs.amount
-					})
-					.exec()
+			if(signal.expried)
+			{
+				throw new Error('Lock expired, can write any more data')
+			}
+
+			return Promise.all([
+				lockedClient.rPush(bidHistoryKey(attrs.itemId),serialized),
+				lockedClient.hSet(itemsKey(item.id),{
+						bids:item.bids+1,
+						price:attrs.amount,
+						highestBidUserId:attrs.userId
+					}),
+				lockedClient.zAdd(itemsByPriceKey(),{
+						value:item.id,
+						score:attrs.amount
+				})
+			])
+			
 		})
+		// return client.executeIsolated(async (isolatedClient) =>
+		// {
+		// 	await isolatedClient.watch(itemsKey(attrs.itemId));
+		// })
 	}
 
 export const getBidHistory = async (
